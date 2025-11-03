@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import tiktoken
 from openai import OpenAI
+from datetime import datetime
+import json
 
 # Default prompt used for benchmarking. Long enough to hopefully get a good sense of prompt processing speed, and generate enough response tokens to get a reasonable measure there too.
 DEFAULT_PROMPT = ("Imagine you are planning a week-long vacation to a place you've never visited before. "
@@ -83,9 +85,10 @@ def benchmark_model(client, model_name, prompt):
         "avg_time_between_chunks": avg_time_between_chunks
     }
 
-def write_results(model_name, results):
-    file_exists = os.path.isfile("output.csv")
-    with open("output.csv", mode='a', newline='') as file:
+def write_results(model_name, results, output_dir):
+    csv_file = os.path.join(output_dir, "output.csv")
+    file_exists = os.path.isfile(csv_file)
+    with open(csv_file, mode='a', newline='') as file:
         writer = csv.writer(file)
         if not file_exists:
             writer.writerow([
@@ -108,7 +111,7 @@ def calculate_model_ranks(df):
     sorted_medians = medians.sort_values(by='Response Tok/s', ascending=True)
     return sorted_medians['Model Name'].tolist()
 
-def generate_plots(csv_file):
+def generate_plots(csv_file, output_dir):
     df = pd.read_csv(csv_file)
     
     # Calculate the ranks and order the models
@@ -119,7 +122,7 @@ def generate_plots(csv_file):
     sns.boxplot(x="Model Name", y="Time To First Token", data=df, order=model_order)
     plt.title("Time To First Token by Model")
     plt.xticks(rotation=15)
-    plt.savefig("time_to_first_token_boxplot.png")
+    plt.savefig(os.path.join(output_dir, "time_to_first_token_boxplot.png"))
     plt.close()
 
     # Boxplot for Prompt Tok/s
@@ -127,7 +130,7 @@ def generate_plots(csv_file):
     sns.boxplot(x="Model Name", y="Prompt Tok/s", data=df, order=model_order)
     plt.title("Prompt Tokens per Second by Model")
     plt.xticks(rotation=15)
-    plt.savefig("prompt_tokens_per_second_boxplot.png")
+    plt.savefig(os.path.join(output_dir, "prompt_tokens_per_second_boxplot.png"))
     plt.close()
 
     # Boxplot for Response Tok/s
@@ -135,7 +138,7 @@ def generate_plots(csv_file):
     sns.boxplot(x="Model Name", y="Response Tok/s", data=df, order=model_order)
     plt.title("Response Tokens per Second by Model")
     plt.xticks(rotation=15)
-    plt.savefig("response_tokens_per_second_boxplot.png")
+    plt.savefig(os.path.join(output_dir, "response_tokens_per_second_boxplot.png"))
     plt.close()
 
     # Boxplot for Number of Response Tokens
@@ -143,7 +146,7 @@ def generate_plots(csv_file):
     sns.boxplot(x="Model Name", y="Num Response Tokens", data=df, order=model_order)
     plt.title("Number of Response Tokens by Model")
     plt.xticks(rotation=15)
-    plt.savefig("num_response_tokens_boxplot.png")
+    plt.savefig(os.path.join(output_dir, "num_response_tokens_boxplot.png"))
     plt.close()
 
     # Boxplot for Average Tokens per Chunk
@@ -151,7 +154,7 @@ def generate_plots(csv_file):
     sns.boxplot(x="Model Name", y="Avg Tokens per Chunk", data=df, order=model_order)
     plt.title("Average Tokens per Chunk by Model")
     plt.xticks(rotation=15)
-    plt.savefig("avg_tokens_per_chunk_boxplot.png")
+    plt.savefig(os.path.join(output_dir, "avg_tokens_per_chunk_boxplot.png"))
     plt.close()
 
     # Boxplot for Average Time Between Chunks
@@ -159,10 +162,10 @@ def generate_plots(csv_file):
     sns.boxplot(x="Model Name", y="Avg Time Between Chunks", data=df, order=model_order)
     plt.title("Average Time Between Chunks by Model")
     plt.xticks(rotation=15)
-    plt.savefig("avg_time_between_chunks_boxplot.png")
+    plt.savefig(os.path.join(output_dir, "avg_time_between_chunks_boxplot.png"))
     plt.close()
 
-def generate_markdown_summary(csv_file):
+def generate_markdown_summary(csv_file, output_dir):
     df = pd.read_csv(csv_file)
     
     # Calculate medians and IQR for each model and variable
@@ -186,7 +189,8 @@ def generate_markdown_summary(csv_file):
     summary['Model Name'] = pd.Categorical(summary['Model Name'], categories=model_order, ordered=True)
     summary = summary.sort_values('Model Name')
     
-    with open("output.md", "w") as md_file:
+    md_file_path = os.path.join(output_dir, "output.md")
+    with open(md_file_path, "w") as md_file:
         md_file.write("# Model Performance Summary\n\n")
         md_file.write("| Model | Time To First Token | Prompt Tok/s | Response Tok/s | Num Response Tokens | Avg Tokens per Chunk | Avg Time Between Chunks |\n")
         md_file.write("| --- | --- | --- | --- | --- | --- | --- |\n")
@@ -207,12 +211,45 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", type=str, default=DEFAULT_PROMPT, help="The prompt to send to the models.")
     parser.add_argument("--number", "-n", type=int, default=10, help="Number of times to run the benchmark (default 10).")
     parser.add_argument("--plot", type=str, choices=["yes", "no", "only"], default="yes", help="Generate plots: 'yes' (default), 'no', or 'only'.")
+    parser.add_argument("--api-key", type=str, help="OpenAI API key (or set OPENAI_API_KEY env var).")
+    parser.add_argument("--base-url", type=str, help="Base URL for OpenAI-compatible API (or set OPENAI_BASE_URL env var).")
+    parser.add_argument("--output-dir", "-o", type=str, help="Output directory for results (default: results_YYYYMMDD_HHMMSS).")
     args = parser.parse_args()
 
+    # Create output directory with timestamp
+    if args.output_dir:
+        output_dir = args.output_dir
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = f"results_{timestamp}"
+    
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Get API credentials from args or environment
+    api_key = args.api_key or os.environ.get("OPENAI_API_KEY")
+    base_url = args.base_url or os.environ.get("OPENAI_BASE_URL")
+
     # Initialize the OpenAI client
-    client = OpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY")
-    )
+    client_kwargs = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    
+    client = OpenAI(**client_kwargs)
+
+    # Save parameters to a JSON file
+    params = {
+        "timestamp": datetime.now().isoformat(),
+        "models": args.models,
+        "prompt": args.prompt,
+        "number": args.number,
+        "api_key": "***" if api_key else None,
+        "base_url": base_url,
+        "output_dir": output_dir
+    }
+    
+    params_file = os.path.join(output_dir, "parameters.json")
+    with open(params_file, "w") as f:
+        json.dump(params, f, indent=2)
 
     if args.plot != "only":
         # Calculate total number of steps for the overall progress bar
@@ -229,14 +266,16 @@ if __name__ == "__main__":
                     overall_progress.update(1)
 
                 # Write the results to the CSV file
-                write_results(model_name.strip(), results)
+                write_results(model_name.strip(), results, output_dir)
 
-        print(f"Results have been written to output.csv")
+        print(f"Results have been written to {os.path.join(output_dir, 'output.csv')}")
+        print(f"Parameters have been saved to {params_file}")
 
     if args.plot != "no":
+        csv_file = os.path.join(output_dir, "output.csv")
         # Generate the plots
-        generate_plots("output.csv")
-        print("Plots have been saved as time_to_first_token_boxplot.png, prompt_tokens_per_second_boxplot.png, response_tokens_per_second_boxplot.png, num_response_tokens_boxplot.png, avg_tokens_per_chunk_boxplot.png, and avg_time_between_chunks_boxplot.png.")
+        generate_plots(csv_file, output_dir)
+        print(f"Plots have been saved to {output_dir}")
         # Generate the markdown summary
-        generate_markdown_summary("output.csv")
-        print("Markdown summary has been saved as output.md")
+        generate_markdown_summary(csv_file, output_dir)
+        print(f"Markdown summary has been saved to {os.path.join(output_dir, 'output.md')}")
